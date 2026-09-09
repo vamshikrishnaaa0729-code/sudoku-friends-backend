@@ -1,0 +1,1 @@
+{"name":"sudoku-friends","version":"1.5.0","private":true,"main":"expo/AppEntry.js","scripts":{"start":"expo start","android":"expo start --android","build:android":"eas build --platform android --profile production"},"dependencies":{"expo":"~54.0.0","react":"19.1.0","react-native":"0.81.4","socket.io-client":"^4.8.1"},"devDependencies":{"eas-cli":"latest"}}
