@@ -1,68 +1,26 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
-
-const PORT = process.env.PORT || 3000;
-const PUZZLE = [
-  [5,3,0,0,7,0,0,0,0],[6,0,0,1,9,5,0,0,0],[0,9,8,0,0,0,0,6,0],
-  [8,0,0,0,6,0,0,0,3],[4,0,0,8,0,3,0,0,1],[7,0,0,0,2,0,0,0,6],
-  [0,6,0,0,0,0,2,8,0],[0,0,0,4,1,9,0,0,5],[0,0,0,0,8,0,0,7,9]
-];
-const SOLUTION = [
-  [5,3,4,6,7,8,9,1,2],[6,7,2,1,9,5,3,4,8],[1,9,8,3,4,2,5,6,7],
-  [8,5,9,7,6,1,4,2,3],[4,2,6,8,5,3,7,9,1],[7,1,3,9,2,4,8,5,6],
-  [9,6,1,5,3,7,2,8,4],[2,8,7,4,1,9,6,3,5],[3,4,5,2,8,6,1,7,9]
-];
-const rooms = new Map();
-
-app.get('/health', (_, res) => res.json({ ok: true, service: 'sudoku-friends', rooms: rooms.size }));
-app.get('/', (_, res) => res.json({ service: 'Sudoku Friends backend', status: 'online' }));
-
-function emptyBoard() { return PUZZLE.map(r => [...r]); }
-function solved(board) { return board.every((r,y) => r.every((v,x) => v === SOLUTION[y][x])); }
-
-io.on('connection', socket => {
-  socket.on('room:create', ({ roomId, name } = {}) => {
-    const id = String(roomId || Math.random().toString(36).slice(2,8)).toUpperCase();
-    if (rooms.has(id)) return socket.emit('room:error', 'Room already exists');
-    rooms.set(id, { players: [{ id: socket.id, name: name || 'Player 1', board: emptyBoard() }] });
-    socket.join(id); socket.data.roomId = id;
-    socket.emit('room:created', { roomId: id });
-  });
-
-  socket.on('room:join', ({ roomId, name } = {}) => {
-    const id = String(roomId || '').toUpperCase(); const room = rooms.get(id);
-    if (!room) return socket.emit('room:error', 'Room not found');
-    if (room.players.length >= 2) return socket.emit('room:error', 'Room is full');
-    room.players.push({ id: socket.id, name: name || 'Player 2', board: emptyBoard() });
-    socket.join(id); socket.data.roomId = id;
-    io.to(id).emit('room:ready', { players: room.players.map(p => ({ id: p.id, name: p.name })) });
-  });
-
-  socket.on('game:start', () => {
-    const room = rooms.get(socket.data.roomId); if (!room || room.players.length !== 2) return;
-    io.to(socket.data.roomId).emit('game:started', { puzzle: PUZZLE });
-  });
-
-  socket.on('game:move', ({ row, col, value } = {}) => {
-    const room = rooms.get(socket.data.roomId); if (!room) return;
-    const player = room.players.find(p => p.id === socket.id); if (!player) return;
-    if (PUZZLE[row]?.[col]) return;
-    if (Number(value) !== SOLUTION[row][col]) return socket.emit('game:mistake', { row, col });
-    player.board[row][col] = Number(value);
-    io.to(socket.data.roomId).emit('game:move', { playerId: socket.id, row, col, value: Number(value) });
-    if (solved(player.board)) io.to(socket.data.roomId).emit('game:winner', { playerId: socket.id, name: player.name });
-  });
-
-  socket.on('disconnect', () => {
-    const id = socket.data.roomId; const room = rooms.get(id); if (!room) return;
-    room.players = room.players.filter(p => p.id !== socket.id);
-    if (!room.players.length) rooms.delete(id); else io.to(id).emit('room:player-left');
-  });
+const express=require('express');const http=require('http');const cors=require('cors');const crypto=require('crypto');const {Server}=require('socket.io');
+const PUZZLES=require('./puzzles.json');
+const app=express();app.use(cors({origin:true}));app.use(express.json());const server=http.createServer(app);const io=new Server(server,{cors:{origin:'*',methods:['GET','POST']}});
+const rooms=new Map(),queue=[];
+const code=()=>{let c;do c=String(100000+crypto.randomInt(900000));while(rooms.has(c));return c};
+const seeded=(seed)=>{let x=(seed>>>0)||1;return()=>{x=(Math.imul(1664525,x)+1013904223)>>>0;return x/4294967296}};
+const perm=(n,rng)=>{const a=Array.from({length:n},(_,i)=>i);for(let i=n-1;i>0;i--){const j=Math.floor(rng()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a};
+const transformSudoku=(item,seed)=>{const rng=seeded(seed);const bands=perm(3,rng);const rows=[];bands.forEach(b=>perm(3,rng).forEach(r=>rows.push(b*3+r)));const stacks=perm(3,rng);const cols=[];stacks.forEach(st=>perm(3,rng).forEach(c=>cols.push(st*3+c)));const digits=perm(9,rng).map(x=>x+1);const mapGrid=g=>rows.map(r=>cols.map(c=>{const v=g[r][c];return v?digits[v-1]:0}));return{puzzle:mapGrid(item.puzzle),solution:mapGrid(item.solution)}};
+const validCode=v=>/^\d{6}$/.test(String(v));
+const pub=r=>r.players.map(({id,name,score})=>({id,name,score}));
+function newRoom(host){const c=code();const r={code:c,difficulty:'Easy',started:false,players:[{id:host.id,name:host.name,score:0}],boards:new Map(),puzzle:null,solution:null};rooms.set(c,r);return r}
+function start(r,difficulty){const l=PUZZLES[difficulty]||PUZZLES.Easy;const idx=Date.now()%5000;const base=l[idx%l.length];const p=transformSudoku(base,((Object.keys(PUZZLES).indexOf(difficulty)+1)*1000003+idx*9176+17)>>>0);r.difficulty=difficulty;r.puzzle=p.puzzle;r.solution=p.solution;r.started=true;r.boards=new Map(r.players.map(x=>[x.id,r.puzzle.map(row=>row.map(v=>v))]));io.to(r.code).emit('game:started',{difficulty:r.difficulty,puzzle:r.puzzle,startedAt:Date.now()})}
+function valid(r,row,col,value){return Number.isInteger(row)&&row>=0&&row<9&&Number.isInteger(col)&&col>=0&&col<9&&Number.isInteger(value)&&value>=1&&value<=9&&r.puzzle[row][col]===0&&r.solution[row][col]===value}
+function solved(r,b){for(let i=0;i<9;i++)for(let j=0;j<9;j++)if(b[i][j]!==r.solution[i][j])return false;return true}
+app.get('/health',(_,res)=>res.json({ok:true,service:'sudoku-friends',version:'2.0.3'}));
+app.get('/',(_,res)=>res.json({service:'Sudoku Friends backend',status:'online',version:'2.0.3'}));
+io.on('connection',socket=>{
+ socket.on('room:create',(p={})=>{const r=newRoom({id:socket.id,name:String(p.name||'Player').slice(0,20)});socket.join(r.code);socket.data.roomCode=r.code;socket.emit('room:created',{code:r.code,players:pub(r)})});
+ socket.on('room:join',(p={})=>{const requested=String(p.code||p.roomId||'');if(!validCode(requested))return socket.emit('room:error',{message:'Room code must be exactly 6 digits'});const r=rooms.get(requested);if(!r)return socket.emit('room:error',{message:'Room not found'});if(r.started)return socket.emit('room:error',{message:'Match already started'});if(r.players.length>=2)return socket.emit('room:error',{message:'Room is full'});r.players.push({id:socket.id,name:String(p.name||'Player').slice(0,20),score:0});socket.join(r.code);socket.data.roomCode=r.code;io.to(r.code).emit('room:ready',{players:pub(r)})});
+ socket.on('match:queue',(p={})=>{queue.push({id:socket.id,name:String(p.name||'Player').slice(0,20),difficulty:p.difficulty||'Easy'});if(queue.length>=2){const a=queue.shift(),b=queue.shift();const r=newRoom(a);r.players.push({id:b.id,name:b.name,score:0});for(const x of [a,b]){io.sockets.sockets.get(x.id)?.join(r.code);if(io.sockets.sockets.get(x.id))io.sockets.sockets.get(x.id).data.roomCode=r.code}io.to(r.code).emit('match:found',{code:r.code,players:pub(r)});start(r,r.difficulty)}});
+ socket.on('game:start',(p={})=>{const r=rooms.get(socket.data.roomCode);if(!r||r.players.length!==2||r.started)return;start(r,p.difficulty||'Easy')});
+ socket.on('game:move',(p={})=>{const r=rooms.get(socket.data.roomCode);if(!r||!r.started)return;const b=r.boards.get(socket.id);const row=Number(p.row),col=Number(p.col),value=Number(p.value);if(!b||!valid(r,row,col,value))return socket.emit('game:mistake',{row,col});b[row][col]=value;io.to(r.code).emit('game:move',{row,col,value,playerId:socket.id});if(solved(r,b)){r.started=false;const pl=r.players.find(x=>x.id===socket.id);if(pl)pl.score++;io.to(r.code).emit('game:winner',{playerId:socket.id,name:pl?.name||'Player'})}});
+ socket.on('game:reaction',p=>{const r=rooms.get(socket.data.roomCode);if(r)io.to(r.code).emit('game:reaction',{playerId:socket.id,text:String(p?.text||'🔥').slice(0,30)})});
+ socket.on('disconnect',()=>{const qi=queue.findIndex(x=>x.id===socket.id);if(qi>=0)queue.splice(qi,1);const r=rooms.get(socket.data.roomCode);if(!r)return;r.players=r.players.filter(x=>x.id!==socket.id);r.boards.delete(socket.id);io.to(r.code).emit('room:player-left');if(!r.players.length)rooms.delete(r.code)})
 });
-
-server.listen(PORT, '0.0.0.0', () => console.log(`Sudoku Friends backend listening on ${PORT}`));
+server.listen(Number(process.env.PORT)||3000,()=>console.log('Sudoku Friends backend 2.0.3 listening'));
